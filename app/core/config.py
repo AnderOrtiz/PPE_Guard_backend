@@ -24,10 +24,18 @@ class Settings(BaseSettings):
     CONFIDENCE_THRESHOLD: float = 0.50
     IOU_THRESHOLD: float = 0.45
 
+    # Al arrancar, una práctica que quedó "activa" se reanuda solo si empezó
+    # hace menos de estas horas; si no, se cierra.
+    PRACTICA_RECUPERABLE_HORAS: int = 8
+
     # Autenticación
     JWT_SECRET_KEY: str
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRE_MINUTES: int = 480  # 8 horas, cubre una jornada de clases
+
+    # Clave Fernet con la que se cifran los rostros (face_embedding) en la base.
+    # Perderla o cambiarla obliga a registrar de nuevo el rostro de todos los alumnos.
+    FACE_EMBEDDING_KEY: str
 
 
 settings = Settings()
