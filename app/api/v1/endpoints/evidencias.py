@@ -1,11 +1,12 @@
 import os
 
 from bson import ObjectId
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Path, status
 from fastapi.responses import FileResponse
 
 from app.core.database import get_database
 from app.api.v1.dependencies import get_current_user_media
+from app.api.v1.docs import errores
 
 router = APIRouter()
 
@@ -27,8 +28,24 @@ async def _puede_ver(database, user: dict, asistencia: dict) -> bool:
     return materia[campo] == user["user_id"]
 
 
-@router.get("/static/evidence/{fecha}/{archivo}")
-async def ver_evidencia(fecha: str, archivo: str, user: dict = Depends(get_current_user_media)):
+@router.get(
+    "/static/evidence/{fecha}/{archivo}",
+    response_class=FileResponse,
+    summary="Ver una evidencia",
+    responses={
+        200: {"content": {"image/jpeg": {}}, "description": "La imagen del incumplimiento."},
+        **errores(401, (403, "La evidencia está fuera de tu alcance."), (404, "La evidencia indicada no existe.")),
+    },
+)
+async def ver_evidencia(
+    fecha: str = Path(description="Carpeta de la evidencia, tal como viene en `evidencia_url`."),
+    archivo: str = Path(description="Nombre del archivo, tal como viene en `evidencia_url`."),
+    user: dict = Depends(get_current_user_media),
+):
+    """Sirve la ruta que devuelve `evidencia_url`. El token va en el header o como `?token=`.
+
+    **Alcance:** el `alumno` dueño de la asistencia, el `docente` de la materia, el `coordinador` a cargo o el `admin`.
+    """
     # Solo se sirven rutas que estén registradas en una asistencia: de ahí sale
     # tanto el permiso como la garantía de que no se lee nada fuera de la carpeta.
     evidencia_url = f"/static/evidence/{fecha}/{archivo}"

@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends
 
 from app.core.database import get_database
 from app.api.v1.dependencies import require_role
+from app.api.v1.docs import errores
 from app.models.asistencia import AsistenciaAlumnoOut
 from app.models.materia import MateriaAlumnoOut
 
@@ -17,8 +18,14 @@ async def _nombres_docentes(database, materias: list[dict]) -> dict[str, str]:
     return {str(doc["_id"]): doc["nombre"] async for doc in cursor}
 
 
-@router.get("/alumno/materias", response_model=list[MateriaAlumnoOut])
+@router.get(
+    "/alumno/materias",
+    response_model=list[MateriaAlumnoOut],
+    summary="Listar mis materias",
+    responses=errores(401, 403),
+)
 async def mis_materias(user: dict = Depends(require_role("alumno"))):
+    """Materias en las que está matriculado el alumno, por nombre. **Rol:** `alumno`."""
     database = get_database()
 
     materias = [m async for m in database["materias"].find({"alumnos_ids": user["user_id"]}).sort("nombre", 1)]
@@ -27,8 +34,14 @@ async def mis_materias(user: dict = Depends(require_role("alumno"))):
     return [MateriaAlumnoOut(**m, docente_nombre=docentes.get(m["docente_id"])) for m in materias]
 
 
-@router.get("/alumno/asistencias", response_model=list[AsistenciaAlumnoOut])
+@router.get(
+    "/alumno/asistencias",
+    response_model=list[AsistenciaAlumnoOut],
+    summary="Listar mis asistencias",
+    responses=errores(401, 403),
+)
 async def mis_asistencias(user: dict = Depends(require_role("alumno"))):
+    """Asistencias del alumno, de la más reciente a la más antigua, con su materia y docente. **Rol:** `alumno`."""
     database = get_database()
 
     cursor = database["asistencias"].find({"alumno_id": user["user_id"]}).sort("hora_identificacion", -1)

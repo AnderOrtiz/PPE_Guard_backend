@@ -1,16 +1,32 @@
 from app.models.usuario import AlumnoEnMateriaOut
 from bson import ObjectId
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.core.database import get_database
 from app.api.v1.dependencies import require_role, get_current_user
+from app.api.v1.docs import AlumnoId, MateriaId, errores
 from app.models.materia import MateriaCreate, MateriaInDB, MateriaUpdate, AlumnoEnrollRequest
 
 router = APIRouter()
 
 
-@router.post("/materias", response_model=MateriaInDB, dependencies=[Depends(require_role("coordinador"))])
+@router.post(
+    "/materias",
+    response_model=MateriaInDB,
+    dependencies=[Depends(require_role("coordinador"))],
+    summary="Crear una materia",
+    responses=errores(
+        401,
+        (403, "Tu rol no lo permite, o el docente está fuera de tu cargo."),
+        (404, "El docente indicado no existe."),
+        422,
+    ),
+)
 async def crear_materia(data: MateriaCreate, user: dict = Depends(get_current_user)):
+    """La materia queda a cargo del coordinador del docente y sin alumnos.
+
+    **Roles:** `coordinador` (solo para sus docentes) o `admin`.
+    """
     if not ObjectId.is_valid(data.docente_id):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="docente_id inválido")
@@ -36,10 +52,16 @@ async def crear_materia(data: MateriaCreate, user: dict = Depends(get_current_us
     return MateriaInDB(**creada)
 
 
-@router.get("/materias", 
+@router.get("/materias",
             response_model=list[MateriaInDB],
-            dependencies=[Depends(require_role("coordinador", "docente"))])
-async def listar_materias(docente_id: str | None = None, user: dict = Depends(get_current_user)):
+            dependencies=[Depends(require_role("coordinador", "docente"))],
+            summary="Listar materias",
+            responses=errores(401, 403))
+async def listar_materias(
+    docente_id: str | None = Query(default=None, description="Solo las de este docente. Aplica a `coordinador` y `admin`."),
+    user: dict = Depends(get_current_user),
+):
+    """Un `docente` ve las que imparte; un `coordinador`, las de su cargo; el `admin`, todas."""
     database = get_database()
 
     if user["rol"] == "docente":
@@ -57,8 +79,15 @@ async def listar_materias(docente_id: str | None = None, user: dict = Depends(ge
     return [MateriaInDB(**doc) async for doc in cursor]
 
 
-@router.get("/materias/{materia_id}", response_model=MateriaInDB, dependencies=[Depends(require_role("coordinador", "docente"))])
-async def obtener_materia(materia_id: str, user: dict = Depends(get_current_user)):
+@router.get(
+    "/materias/{materia_id}",
+    response_model=MateriaInDB,
+    dependencies=[Depends(require_role("coordinador", "docente"))],
+    summary="Obtener una materia",
+    responses=errores(401, 403, (404, "La materia indicada no existe."), 422),
+)
+async def obtener_materia(materia_id: MateriaId, user: dict = Depends(get_current_user)):
+    """**Roles:** `docente` de la materia, `coordinador` a cargo o `admin`."""
     if not ObjectId.is_valid(materia_id):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="materia_id inválido")
 
@@ -75,8 +104,18 @@ async def obtener_materia(materia_id: str, user: dict = Depends(get_current_user
     return MateriaInDB(**materia)
 
 
-@router.patch("/materias/{materia_id}", response_model=MateriaInDB, dependencies=[Depends(require_role("coordinador"))])
-async def actualizar_materia(materia_id: str, data: MateriaUpdate, user: dict = Depends(get_current_user)):
+@router.patch(
+    "/materias/{materia_id}",
+    response_model=MateriaInDB,
+    dependencies=[Depends(require_role("coordinador"))],
+    summary="Actualizar una materia",
+    responses=errores(400, 401, 403, (404, "La materia indicada no existe."), 422),
+)
+async def actualizar_materia(materia_id: MateriaId, data: MateriaUpdate, user: dict = Depends(get_current_user)):
+    """Cambia solo los campos enviados. El área y el docente no se pueden cambiar.
+
+    **Roles:** `coordinador` a cargo o `admin`.
+    """
     if not ObjectId.is_valid(materia_id):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="materia_id inválido")
 
@@ -102,12 +141,21 @@ async def actualizar_materia(materia_id: str, data: MateriaUpdate, user: dict = 
     "/materias/{materia_id}/alumnos",
     response_model=MateriaInDB,
     dependencies=[Depends(require_role("coordinador", "docente"))],
+    summary="Matricular a un alumno",
+    responses=errores(
+        401,
+        403,
+        (404, "La materia no existe, o no hay un alumno con ese código."),
+        (409, "El alumno ya está matriculado en esta materia."),
+        422,
+    ),
 )
 async def matricular_alumno_en_materia(
-    materia_id: str,
+    materia_id: MateriaId,
     data: AlumnoEnrollRequest,
     user: dict = Depends(get_current_user),
 ):
+    """Matricula a un alumno existente por su código. **Roles:** `docente` de la materia, `coordinador` a cargo o `admin`."""
     if not ObjectId.is_valid(materia_id):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="materia_id inválido")
@@ -151,8 +199,11 @@ async def matricular_alumno_en_materia(
     "/materias/{materia_id}/alumnos",
     response_model=list[AlumnoEnMateriaOut],
     dependencies=[Depends(require_role("coordinador", "docente"))],
+    summary="Listar los alumnos de una materia",
+    responses=errores(401, 403, (404, "La materia indicada no existe."), 422),
 )
-async def listar_alumnos_en_materia(materia_id: str):
+async def listar_alumnos_en_materia(materia_id: MateriaId):
+    """**Roles:** `docente`, `coordinador` o `admin`. A diferencia del resto de `materias`, no exige que la materia sea del usuario."""
     if not ObjectId.is_valid(materia_id):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="materia_id inválido")
 
@@ -174,13 +225,16 @@ async def listar_alumnos_en_materia(materia_id: str):
     "/materias/{materia_id}/alumnos/{alumno_id}",
     response_model=MateriaInDB,
     dependencies=[Depends(require_role("coordinador", "docente"))],
+    summary="Quitar a un alumno de una materia",
+    responses=errores(401, 403, (404, "La materia no existe, o el alumno no está matriculado en ella."), 422),
 )
 
 async def eliminar_alumno_de_materia(
-    materia_id: str,
-    alumno_id: str,
+    materia_id: MateriaId,
+    alumno_id: AlumnoId,
     user: dict = Depends(get_current_user),
 ):
+    """Le quita la matrícula; el usuario sigue existiendo. **Roles:** `docente` de la materia, `coordinador` a cargo o `admin`."""
     if not ObjectId.is_valid(materia_id):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="materia_id inválido")
 

@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends
 
 from app.core.database import get_database
 from app.api.v1.dependencies import require_role
+from app.api.v1.docs import errores
 from app.models.coordinacion import ResumenCoordinacion
 
 router = APIRouter()
@@ -11,8 +12,17 @@ router = APIRouter()
 DIAS_RECIENTE = 7  # ventana de "materia nueva" y de "laboratorio activo"
 
 
-@router.get("/coordinacion/resumen", response_model=ResumenCoordinacion)
+@router.get(
+    "/coordinacion/resumen",
+    response_model=ResumenCoordinacion,
+    summary="Obtener el resumen de coordinación",
+    responses=errores(401, 403),
+)
 async def resumen_coordinacion(user: dict = Depends(require_role("coordinador"))):
+    """Indicadores de lo que el coordinador tiene a su cargo; para el `admin`, de todo el sistema.
+
+    **Roles:** `coordinador` o `admin`.
+    """
     database = get_database()
     es_admin = user["rol"] == "admin"
 

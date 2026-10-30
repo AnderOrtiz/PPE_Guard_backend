@@ -1,10 +1,11 @@
 from datetime import datetime
 
 from bson import ObjectId
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.core.database import get_database
 from app.api.v1.dependencies import require_role, get_current_user
+from app.api.v1.docs import PracticaId, errores
 from app.models.asistencia import AsistenciaInDB
 from app.models.reporte import ReportePractica, FilaAsistencia
 
@@ -38,14 +39,26 @@ async def _practica_ids_permitidos(database, user: dict, materia_id: str | None,
     return [str(p["_id"]) async for p in practicas_cursor]
 
 
-@router.get("/asistencias", response_model=list[AsistenciaInDB])
+@router.get(
+    "/asistencias",
+    response_model=list[AsistenciaInDB],
+    summary="Listar asistencias",
+    responses=errores(401),
+)
 async def listar_asistencias(
-    materia_id: str | None = None,
-    docente_id: str | None = None,
-    fecha_desde: datetime | None = None,
-    fecha_hasta: datetime | None = None,
+    materia_id: str | None = Query(default=None, description="Solo de esta materia. Se ignora para `alumno` o si el id no es válido."),
+    docente_id: str | None = Query(default=None, description="Solo de este docente. Aplica a `coordinador` y `admin`."),
+    fecha_desde: datetime | None = Query(default=None, description="Identificados desde este momento (ISO 8601)."),
+    fecha_hasta: datetime | None = Query(default=None, description="Identificados hasta este momento (ISO 8601)."),
     user: dict = Depends(get_current_user),
 ):
+    """De la más reciente a la más antigua. Los filtros solo acotan lo que el rol ya permite ver:
+
+    - `alumno`: las suyas.
+    - `docente`: las de sus materias.
+    - `coordinador`: las de las materias a su cargo.
+    - `admin`: todas.
+    """
     database = get_database()
 
     if user["rol"] == "alumno":
@@ -72,8 +85,14 @@ async def listar_asistencias(
     "/practicas/{practica_id}/reporte",
     response_model=ReportePractica,
     dependencies=[Depends(require_role("docente", "coordinador"))],
+    summary="Obtener el reporte de una práctica",
+    responses=errores(401, 403, (404, "La práctica o su materia no existen."), 422),
 )
-async def reporte_practica(practica_id: str, user: dict = Depends(get_current_user)):
+async def reporte_practica(practica_id: PracticaId, user: dict = Depends(get_current_user)):
+    """Totales y una fila por alumno matriculado, incluidos los ausentes.
+
+    **Roles:** `docente` de la materia, `coordinador` a cargo o `admin`.
+    """
     if not ObjectId.is_valid(practica_id):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="practica_id inválido")
 

@@ -2,13 +2,14 @@ import asyncio
 from typing import Literal
 
 from bson import ObjectId
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pymongo.errors import DuplicateKeyError
 
 from app.core.database import get_database
 from app.core.security import hash_password
 from app.core.cifrado import cifrar_embedding
 from app.api.v1.dependencies import require_role, get_current_user, tiene_rol
+from app.api.v1.docs import UsuarioId, errores
 from app.models.usuario import AlumnoCreate, DocenteCreate, CoordinadorCreate, DatosAcademicosUpdate, PasswordReset, UsuarioOut
 from app.services.camera_service import capture_single_frame
 from app.services.face_service import get_face_embedding
@@ -31,16 +32,39 @@ async def _insertar_usuario(doc: dict) -> UsuarioOut:
     return UsuarioOut(**creado)
 
 
-@router.post("/usuarios/coordinadores", response_model=UsuarioOut, dependencies=[Depends(require_role("admin"))])
+@router.post(
+    "/usuarios/coordinadores",
+    response_model=UsuarioOut,
+    dependencies=[Depends(require_role("admin"))],
+    summary="Crear un coordinador",
+    responses=errores(401, 403, (409, "Ya existe un usuario con ese código."), 422),
+)
 async def crear_coordinador(data: CoordinadorCreate):
+    """**Rol:** `admin`."""
     doc = data.model_dump(exclude={"password"})
     doc["password_hash"] = hash_password(data.password)
     doc["rol"] = "coordinador"
     return await _insertar_usuario(doc)
 
 
-@router.post("/usuarios/docentes", response_model=UsuarioOut, dependencies=[Depends(require_role("coordinador"))])
+@router.post(
+    "/usuarios/docentes",
+    response_model=UsuarioOut,
+    dependencies=[Depends(require_role("coordinador"))],
+    summary="Crear un docente",
+    responses=errores(
+        401,
+        403,
+        (404, "El coordinador indicado no existe."),
+        (409, "Ya existe un usuario con ese código."),
+        (422, "Falta `coordinador_id`, su formato es inválido, o algún dato no es válido."),
+    ),
+)
 async def crear_docente(data: DocenteCreate, user: dict = Depends(get_current_user)):
+    """Un `coordinador` crea docentes a su propio cargo e ignora `coordinador_id`; el `admin` debe indicarlo.
+
+    **Roles:** `coordinador` o `admin`.
+    """
     # Un coordinador crea docentes a su propio cargo; solo el admin elige a cuál asignarlo.
     coordinador_id = user["user_id"] if user["rol"] == "coordinador" else data.coordinador_id
     if coordinador_id is None:
@@ -80,8 +104,25 @@ async def _validar_materias_para_matricular(materias_ids: list[str], user: dict)
     return object_ids
 
 
-@router.post("/usuarios/alumnos", response_model=UsuarioOut, dependencies=[Depends(require_role("coordinador", "docente"))])
+@router.post(
+    "/usuarios/alumnos",
+    response_model=UsuarioOut,
+    dependencies=[Depends(require_role("coordinador", "docente"))],
+    summary="Enrolar a un alumno",
+    responses=errores(
+        401,
+        (403, "Tu rol no lo permite, una materia no es tuya, o un docente intentó asignar carrera o facultad."),
+        (404, "Alguna de las materias indicadas no existe."),
+        (409, "Ya existe un usuario con ese código."),
+        (422, "No se detectó exactamente un rostro, o algún dato no es válido."),
+    ),
+)
 async def crear_alumno(data: AlumnoCreate, user: dict = Depends(get_current_user)):
+    """Captura su rostro con la cámara del servidor, así que debe estar frente a ella y solo. Puede matricularlo
+    de una vez en `materias_ids`, si son del usuario. El rostro se guarda cifrado y nunca se devuelve.
+
+    **Roles:** `docente`, `coordinador` o `admin`. Si la cámara no abre, responde 500.
+    """
     # Se verifican el código y las materias ANTES de la captura: son consultas rápidas, y no
     # tiene sentido hacer esperar al usuario por la cámara para rechazarlo después.
     if not await _codigo_disponible(data.codigo):
@@ -131,11 +172,20 @@ async def _filtro_visibilidad(user: dict) -> dict:
     return {"$or": [alumnos, {"rol": "docente", "coordinador_id": user["user_id"]}]}
 
 
-@router.get("/usuarios", response_model=list[UsuarioOut], dependencies=[Depends(require_role("coordinador", "docente"))])
+@router.get(
+    "/usuarios",
+    response_model=list[UsuarioOut],
+    dependencies=[Depends(require_role("coordinador", "docente"))],
+    summary="Listar usuarios",
+    responses=errores(401, 403),
+)
 async def listar_usuarios(
-    rol: Literal["alumno", "docente", "coordinador"] | None = None,
+    rol: Literal["alumno", "docente", "coordinador"] | None = Query(default=None, description="Solo los de este rol."),
     user: dict = Depends(get_current_user),
 ):
+    """Ordenados por nombre. Un `docente` ve a los alumnos de sus materias; un `coordinador`, además, a sus docentes;
+    el `admin`, a todos.
+    """
     database = get_database()
 
     filtro = await _filtro_visibilidad(user)
@@ -146,8 +196,15 @@ async def listar_usuarios(
     return [UsuarioOut(**doc) async for doc in cursor]
 
 
-@router.get("/usuarios/{usuario_id}", response_model=UsuarioOut, dependencies=[Depends(require_role("coordinador", "docente"))])
-async def obtener_usuario(usuario_id: str, user: dict = Depends(get_current_user)):
+@router.get(
+    "/usuarios/{usuario_id}",
+    response_model=UsuarioOut,
+    dependencies=[Depends(require_role("coordinador", "docente"))],
+    summary="Obtener un usuario",
+    responses=errores(401, 403, (404, "El usuario indicado no existe."), 422),
+)
+async def obtener_usuario(usuario_id: UsuarioId, user: dict = Depends(get_current_user)):
+    """Misma visibilidad que el listado; cada quien puede verse a sí mismo. **Roles:** `docente`, `coordinador` o `admin`."""
     if not ObjectId.is_valid(usuario_id):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="usuario_id inválido")
 
@@ -188,8 +245,15 @@ async def _alumno_o_docente_a_cargo(usuario_id: str, user: dict) -> dict:
     return usuario
 
 
-@router.patch("/usuarios/{usuario_id}", response_model=UsuarioOut, dependencies=[Depends(require_role("coordinador"))])
-async def actualizar_datos_academicos(usuario_id: str, data: DatosAcademicosUpdate, user: dict = Depends(get_current_user)):
+@router.patch(
+    "/usuarios/{usuario_id}",
+    response_model=UsuarioOut,
+    dependencies=[Depends(require_role("coordinador"))],
+    summary="Actualizar datos académicos",
+    responses=errores(400, 401, 403, (404, "El usuario indicado no existe."), 422),
+)
+async def actualizar_datos_academicos(usuario_id: UsuarioId, data: DatosAcademicosUpdate, user: dict = Depends(get_current_user)):
+    """Cambia solo los campos enviados. **Roles:** `coordinador` (alumnos y docentes a su cargo) o `admin`."""
     usuario = await _alumno_o_docente_a_cargo(usuario_id, user)
 
     cambios = data.model_dump(exclude_none=True)
@@ -207,8 +271,11 @@ async def actualizar_datos_academicos(usuario_id: str, data: DatosAcademicosUpda
     "/usuarios/{usuario_id}/password",
     status_code=status.HTTP_204_NO_CONTENT,
     dependencies=[Depends(require_role("coordinador"))],
+    summary="Restablecer la contraseña de un usuario",
+    responses=errores(401, 403, (404, "El usuario indicado no existe."), 422),
 )
-async def resetear_password(usuario_id: str, data: PasswordReset, user: dict = Depends(get_current_user)):
+async def resetear_password(usuario_id: UsuarioId, data: PasswordReset, user: dict = Depends(get_current_user)):
+    """No pide la contraseña anterior. **Roles:** `coordinador` (alumnos y docentes a su cargo) o `admin`."""
     usuario = await _alumno_o_docente_a_cargo(usuario_id, user)
 
     await get_database()["usuarios"].update_one(

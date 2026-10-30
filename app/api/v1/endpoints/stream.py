@@ -7,6 +7,7 @@ from fastapi.responses import StreamingResponse
 
 from app.core import apagado
 from app.api.v1.dependencies import require_role, get_current_user_media
+from app.api.v1.docs import errores
 from app.services import vista_previa
 from app.services.camera_service import camera_service
 
@@ -52,11 +53,23 @@ async def _generate_mjpeg(request: Request, user_id: str):
         await asyncio.sleep(STREAM_INTERVAL_SECONDS)
 
 
-@router.get("/stream")
+@router.get(
+    "/stream",
+    response_class=StreamingResponse,
+    summary="Ver el video en vivo",
+    responses={
+        200: {"content": {"multipart/x-mixed-replace; boundary=frame": {}}, "description": "Video MJPEG continuo."},
+        **errores(401, 403, (409, "La cámara está apagada: no hay práctica activa ni vista previa.")),
+    },
+)
 async def video_stream(
     request: Request,
     user: dict = Depends(require_role("docente", "coordinador", auth=get_current_user_media)),
 ):
+    """Video MJPEG pensado para un `<img src="/api/v1/stream?token=...">`. Swagger UI no puede reproducirlo.
+
+    Se corta al apagarse la cámara o tras 5 segundos sin imagen. **Roles:** `docente`, `coordinador` o `admin`.
+    """
     if not camera_service.encendida:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

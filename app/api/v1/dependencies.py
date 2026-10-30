@@ -1,10 +1,12 @@
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Query, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from app.core.security import decode_access_token
 
-bearer_scheme = HTTPBearer()
-bearer_opcional = HTTPBearer(auto_error=False)
+_BEARER_DOCS = {"bearerFormat": "JWT", "description": "El `access_token` de `POST /api/v1/auth/login`."}
+
+bearer_scheme = HTTPBearer(**_BEARER_DOCS)
+bearer_opcional = HTTPBearer(auto_error=False, **_BEARER_DOCS)
 
 # Jerarquía: el admin hereda todos los permisos del coordinador
 ROLE_EXPANSION = {"admin": {"admin", "coordinador", "docente"}}
@@ -24,7 +26,7 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(bearer_
 
 def get_current_user_media(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_opcional),
-    token: str | None = None,
+    token: str | None = Query(default=None, description="JWT, para clientes que no pueden mandar el header `Authorization`."),
 ) -> dict:
     """Para recursos que el navegador pide desde un <img> (stream, evidencias),
     donde no se puede mandar el header: acepta el token también como ?token=."""

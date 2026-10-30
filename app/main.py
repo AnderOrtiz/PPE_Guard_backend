@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.database import connect_to_mongo, close_mongo_connection
 from app.core import async_bridge, apagado
+from app.api.v1.docs import DESCRIPCION_API, TAGS
 from app.api.v1.router import api_router
 from app.api.v1.endpoints.evidencias import router as evidencias_router
 from app.services.practica_lifecycle import recuperar_practica_activa
@@ -33,7 +34,14 @@ async def lifespan(app: FastAPI):
     await close_mongo_connection()
 
 
-app = FastAPI(title=settings.APP_NAME, lifespan=lifespan)
+app = FastAPI(
+    title=settings.APP_NAME,
+    description=DESCRIPCION_API,
+    version="1.0.0",
+    openapi_tags=TAGS,
+    swagger_ui_parameters={"persistAuthorization": True},  # el token sobrevive a recargar /docs
+    lifespan=lifespan,
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -48,6 +56,7 @@ app.include_router(evidencias_router, tags=["evidencias"])  # /static/evidence/.
 app.include_router(ws_router)
 
 
-@app.get("/")
+@app.get("/", summary="Comprobar que el backend corre", tags=["health"])
 def root():
+    """Responde siempre que el proceso esté en marcha; no revisa MongoDB. Para eso, `GET /api/v1/health`."""
     return {"message": f"{settings.APP_NAME} backend corriendo"}

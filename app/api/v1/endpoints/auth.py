@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from app.core.database import get_database
 from app.core.security import hash_password, verify_password, create_access_token
 from app.api.v1.dependencies import get_current_user, tiene_rol
+from app.api.v1.docs import errores
 from app.models.usuario import UsuarioLogin, TokenResponse, UsuarioOut, PerfilUpdate, DatosAcademicosUpdate, PasswordCambio
 
 router = APIRouter()
@@ -22,8 +23,14 @@ def _token_response(usuario: dict) -> TokenResponse:
     return TokenResponse(access_token=token, rol=usuario["rol"], nombre=usuario["nombre"])
 
 
-@router.post("/auth/login", response_model=TokenResponse)
+@router.post(
+    "/auth/login",
+    response_model=TokenResponse,
+    summary="Iniciar sesión",
+    responses=errores((401, "Código o contraseña incorrectos.")),
+)
 async def login(credentials: UsuarioLogin):
+    """Devuelve el token para autenticar el resto de las peticiones."""
     database = get_database()
     usuario = await database["usuarios"].find_one({"codigo": credentials.codigo})
 
@@ -33,13 +40,20 @@ async def login(credentials: UsuarioLogin):
     return _token_response(usuario)
 
 
-@router.get("/auth/me", response_model=UsuarioOut)
+@router.get("/auth/me", response_model=UsuarioOut, summary="Ver mi perfil", responses=errores(401))
 async def yo(user: dict = Depends(get_current_user)):
+    """Datos del usuario dueño del token."""
     return UsuarioOut(**await _usuario_del_token(user))
 
 
-@router.patch("/auth/me", response_model=UsuarioOut)
+@router.patch(
+    "/auth/me",
+    response_model=UsuarioOut,
+    summary="Actualizar mi perfil",
+    responses=errores(400, 401, (403, "Solo un coordinador o admin puede cambiar sus datos académicos."), 422),
+)
 async def actualizar_perfil(data: PerfilUpdate, user: dict = Depends(get_current_user)):
+    """Cambia solo los campos enviados. `carrera`, `facultad` y `estatus_academico` requieren rol `coordinador` o `admin`."""
     usuario = await _usuario_del_token(user)
 
     cambios = data.model_dump(exclude_none=True)
@@ -60,8 +74,14 @@ async def actualizar_perfil(data: PerfilUpdate, user: dict = Depends(get_current
     return UsuarioOut(**actualizado)
 
 
-@router.post("/auth/me/password", status_code=status.HTTP_204_NO_CONTENT)
+@router.post(
+    "/auth/me/password",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Cambiar mi contraseña",
+    responses=errores(401, (403, "La contraseña actual no es correcta."), 422),
+)
 async def cambiar_password(data: PasswordCambio, user: dict = Depends(get_current_user)):
+    """Exige la contraseña vigente. Los tokens ya emitidos siguen siendo válidos hasta que expiren."""
     usuario = await _usuario_del_token(user)
 
     # Se pide la actual: un token robado o una sesión abierta no bastan para quedarse con la cuenta.
@@ -75,7 +95,8 @@ async def cambiar_password(data: PasswordCambio, user: dict = Depends(get_curren
     )
 
 
-@router.post("/auth/refresh", response_model=TokenResponse)
+@router.post("/auth/refresh", response_model=TokenResponse, summary="Renovar el token", responses=errores(401))
 async def refrescar_token(user: dict = Depends(get_current_user)):
+    """Emite un token nuevo a partir de uno vigente, con el rol actual del usuario."""
     # Se relee el usuario: si lo borraron o le cambiaron el rol, el token nuevo lo refleja.
     return _token_response(await _usuario_del_token(user))

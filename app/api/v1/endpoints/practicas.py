@@ -1,19 +1,37 @@
 from datetime import datetime, timezone
 
 from bson import ObjectId
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.core.database import get_database
 from app.api.v1.dependencies import require_role, get_current_user
-from app.models.practica import PracticaCreate, PracticaInDB, ConfirmarRequest
+from app.api.v1.docs import PracticaId, errores
+from app.models.practica import PracticaCreate, PracticaInDB, ConfirmarRequest, ConfirmarResponse
 from app.services.practica_lifecycle import arrancar_orquestador
 from app.services import practica_registry
 
 router = APIRouter()
 
 
-@router.post("/practicas", response_model=PracticaInDB, dependencies=[Depends(require_role("docente"))])
+@router.post(
+    "/practicas",
+    response_model=PracticaInDB,
+    dependencies=[Depends(require_role("docente"))],
+    summary="Iniciar una práctica",
+    responses=errores(
+        401,
+        (403, "Tu rol no lo permite, o no impartes esta materia."),
+        (404, "La materia no existe, o su área no tiene indumentaria configurada."),
+        (409, "Ya hay una práctica en curso."),
+        422,
+        (500, "No se pudo encender la cámara; la práctica no se crea."),
+    ),
+)
 async def iniciar_practica(data: PracticaCreate, user: dict = Depends(get_current_user)):
+    """Enciende la cámara y empieza a identificar alumnos; los resultados llegan por el WebSocket.
+
+    Solo puede haber una práctica activa en todo el servidor. **Roles:** `docente` de la materia o `admin`.
+    """
     database = get_database()
 
     if practica_registry.hay_practica_activa():
@@ -59,8 +77,21 @@ async def iniciar_practica(data: PracticaCreate, user: dict = Depends(get_curren
     return PracticaInDB(**creada)
 
 
-@router.get("/practicas", response_model=list[PracticaInDB], dependencies=[Depends(require_role("docente", "coordinador"))])
-async def listar_practicas(materia_id: str | None = None, user: dict = Depends(get_current_user)):
+@router.get(
+    "/practicas",
+    response_model=list[PracticaInDB],
+    dependencies=[Depends(require_role("docente", "coordinador"))],
+    summary="Listar prácticas",
+    responses=errores(401, 403, 422),
+)
+async def listar_practicas(
+    materia_id: str | None = Query(default=None, description="Solo las de esta materia."),
+    user: dict = Depends(get_current_user),
+):
+    """De la más reciente a la más antigua, limitadas a las materias del usuario; el `admin` ve todas.
+
+    **Roles:** `docente`, `coordinador` o `admin`.
+    """
     if materia_id is not None and not ObjectId.is_valid(materia_id):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="materia_id inválido")
 
@@ -82,8 +113,15 @@ async def listar_practicas(materia_id: str | None = None, user: dict = Depends(g
     return [PracticaInDB(**doc) async for doc in cursor]
 
 
-@router.get("/practicas/active", response_model=PracticaInDB | None, dependencies=[Depends(require_role("docente"))])
+@router.get(
+    "/practicas/active",
+    response_model=PracticaInDB | None,
+    dependencies=[Depends(require_role("docente"))],
+    summary="Obtener la práctica activa",
+    responses=errores(401, 403),
+)
 async def practica_activa(user: dict = Depends(get_current_user)):
+    """La práctica en curso, o `null` si no hay. Un `docente` solo ve la suya. **Roles:** `docente` o `admin`."""
     if not practica_registry.hay_practica_activa():
         return None
 
@@ -96,8 +134,24 @@ async def practica_activa(user: dict = Depends(get_current_user)):
     return PracticaInDB(**practica) if practica else None
 
 
-@router.post("/practicas/{practica_id}/confirmar", dependencies=[Depends(require_role("docente"))])
-async def confirmar_identificacion(practica_id: str, data: ConfirmarRequest, user: dict = Depends(get_current_user)):
+@router.post(
+    "/practicas/{practica_id}/confirmar",
+    response_model=ConfirmarResponse,
+    dependencies=[Depends(require_role("docente"))],
+    summary="Confirmar al alumno identificado",
+    responses=errores(
+        401,
+        (403, "Tu rol no lo permite, o no impartes esta práctica."),
+        (404, "No hay una práctica activa con ese id."),
+        (409, "El alumno no es el último identificado, o ya hay una revisión en curso."),
+    ),
+)
+async def confirmar_identificacion(practica_id: PracticaId, data: ConfirmarRequest, user: dict = Depends(get_current_user)):
+    """Inicia la revisión de indumentaria del alumno, de 6 segundos. El resultado llega por el WebSocket
+    en el evento `asistencia_registrada`.
+
+    **Roles:** `docente` de la práctica o `admin`.
+    """
     orquestador = practica_registry.obtener(practica_id)
     if orquestador is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No hay una práctica activa con ese id")
@@ -118,8 +172,21 @@ async def confirmar_identificacion(practica_id: str, data: ConfirmarRequest, use
     return {"fase": "indumentaria", "alumno_id": data.alumno_id}
 
 
-@router.post("/practicas/{practica_id}/end", response_model=PracticaInDB, dependencies=[Depends(require_role("docente"))])
-async def finalizar_practica(practica_id: str, user: dict = Depends(get_current_user)):
+@router.post(
+    "/practicas/{practica_id}/end",
+    response_model=PracticaInDB,
+    dependencies=[Depends(require_role("docente"))],
+    summary="Finalizar una práctica",
+    responses=errores(
+        401,
+        (403, "Tu rol no lo permite, o no impartes esta práctica."),
+        (404, "La práctica indicada no existe."),
+        (409, "Esta práctica ya fue finalizada."),
+        422,
+    ),
+)
+async def finalizar_practica(practica_id: PracticaId, user: dict = Depends(get_current_user)):
+    """Detiene la detección y marca la práctica como finalizada. **Roles:** `docente` de la práctica o `admin`."""
     if not ObjectId.is_valid(practica_id):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="practica_id inválido")
 
