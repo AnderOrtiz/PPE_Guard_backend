@@ -1,7 +1,3 @@
-```
-Continue  opencode -s ses_e661ec30dffegWQlC0kNspf0Iq
-```
-
 # Integrar el modelo de medicina y ajustar los parámetros
 
 Qué hacer cuando llegue `medicina.pt`, cómo se integra al backend sin tocar código, y la tabla completa de parámetros ajustables (modelo, cámara, revisión de indumentaria, reconocimiento facial y autenticación) con su ruta exacta en el repo.
